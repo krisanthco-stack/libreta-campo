@@ -2,42 +2,47 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Agrimensor Pro</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #f4ecd8; margin: 0; padding: 10px; }
-        #map { height: 50vh; border: 3px solid #5d4037; margin-bottom: 10px; cursor: crosshair; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-        button { background: #5d4037; color: #fff; border: none; padding: 12px; font-weight: bold; }
-        .active-btn { background: #2e5339 !important; }
-        #status { font-size: 13px; padding: 10px; background: #e0d5c1; margin-bottom: 10px; border: 1px solid #5d4037; }
-        ul { list-style: none; padding: 0; }
-        .punto-item { display: flex; justify-content: space-between; padding: 8px; border-bottom: 1px solid #999; }
+        body { font-family: sans-serif; background: #fdf6e3; margin: 0; padding: 10px; color: #333; }
+        #map { height: 45vh; border: 4px solid #5d4037; border-radius: 8px; margin-bottom: 10px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        button { background: #5d4037; color: white; border: none; padding: 12px; font-weight: bold; border-radius: 4px; cursor: pointer; }
+        #stats { background: #e0d5c1; padding: 15px; margin: 10px 0; border-radius: 4px; border: 1px solid #5d4037; }
+        .punto-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid #ccc; font-size: 14px; }
+        .del-btn { background: #8b0000; color: white; padding: 5px 10px; border-radius: 3px; cursor: pointer; }
     </style>
 </head>
 <body>
 
     <h3>Libreta de Agrimensura</h3>
     <div id="map"></div>
+    
     <div class="grid">
-        <button onclick="marcarGPS()">📍 Usar GPS</button>
-        <button id="btn-manual" onclick="toggleManual()">🖱️ Clic Mapa</button>
-        <button onclick="limpiar()" style="background: #8b0000;">❌ Borrar</button>
-        <button onclick="exportar()">💾 CSV</button>
+        <button onclick="marcarGPS()">📍 GPS</button>
+        <button id="btn-manual" onclick="toggleManual()">🖱️ Modo Clic</button>
+        <button onclick="limpiar()" style="background: #8b0000;">❌ Limpiar</button>
+        <button onclick="exportar()">💾 Exportar CSV</button>
     </div>
-    <div id="status">Estado: Listo.</div>
+
+    <div id="stats">
+        <strong>Puntos:</strong> <span id="count">0</span> | 
+        <strong>Área:</strong> <span id="area-val">0</span> m²
+    </div>
+
     <ul id="lista-puntos"></ul>
 
     <script>
         let puntos = JSON.parse(localStorage.getItem('puntos') || '[]');
-        let map, modoManual = false, marcadores = L.layerGroup(), polyline;
+        let map = L.map('map').setView([10.46, -83.98], 15);
+        let marcadores = L.layerGroup().addTo(map);
+        let poligono = L.polygon([], {color: '#2e5339', weight: 2, fillOpacity: 0.2}).addTo(map);
+        let modoManual = false;
 
-        map = L.map('map').setView([-34.6, -58.4], 13);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-        marcadores.addTo(map);
-        polyline = L.polyline([], {color: 'red'}).addTo(map);
 
         map.on('click', (e) => {
             if (modoManual) {
@@ -46,30 +51,17 @@
             }
         });
 
-        function toggleManual() {
-            modoManual = !modoManual;
-            document.getElementById('btn-manual').classList.toggle('active-btn');
-            document.getElementById('status').innerText = modoManual ? "Modo: Tocá el mapa para sumar puntos." : "Modo: GPS activado.";
-        }
-
-        function marcarGPS() {
-            document.getElementById('status').innerText = "Buscando satélites...";
-            navigator.geolocation.getCurrentPosition(
-                (pos) => {
-                    puntos.push({ lat: pos.coords.latitude, lon: pos.coords.longitude });
-                    guardarYRender();
-                    document.getElementById('status').innerText = "Punto GPS guardado.";
-                },
-                (err) => {
-                    document.getElementById('status').innerText = "Error GPS: " + err.message + ". (Revisá permisos en el candado 🔒)";
-                },
-                { enableHighAccuracy: true, timeout: 10000 }
-            );
-        }
-
-        function guardarYRender() {
-            localStorage.setItem('puntos', JSON.stringify(puntos));
-            render();
+        function calcularArea(pts) {
+            if (pts.length < 3) return 0;
+            let radio = 6378137;
+            let area = 0;
+            for (let i = 0; i < pts.length; i++) {
+                let p1 = pts[i];
+                let p2 = pts[(i + 1) % pts.length];
+                area += (p1.lon * Math.PI / 180) * (p2.lat * Math.PI / 180) * Math.cos(p1.lat * Math.PI / 180) * radio * radio;
+                area -= (p2.lon * Math.PI / 180) * (p1.lat * Math.PI / 180) * Math.cos(p1.lat * Math.PI / 180) * radio * radio;
+            }
+            return Math.abs(area / 2).toFixed(2);
         }
 
         function render() {
@@ -80,4 +72,44 @@
                 L.marker([p.lat, p.lon]).addTo(marcadores).bindPopup("Punto " + (i+1));
                 const li = document.createElement('li');
                 li.className = 'punto-item';
-                li.innerHTML = `P${i+1}: ${p.lat.toFixed(5
+                li.innerHTML = `P${i+1}: ${p.lat.toFixed(5)}, ${p.lon.toFixed(5)} <span class="del-btn" onclick="eliminar(${i})">X</span>`;
+                lista.appendChild(li);
+            });
+            poligono.setLatLngs(puntos.map(p => [p.lat, p.lon]));
+            document.getElementById('area-val').innerText = calcularArea(puntos);
+            document.getElementById('count').innerText = puntos.length;
+        }
+
+        function guardarYRender() {
+            localStorage.setItem('puntos', JSON.stringify(puntos));
+            render();
+        }
+
+        function toggleManual() {
+            modoManual = !modoManual;
+            document.getElementById('btn-manual').style.background = modoManual ? '#2e5339' : '#5d4037';
+        }
+
+        function marcarGPS() {
+            if (!navigator.geolocation) return alert("GPS no disponible");
+            navigator.geolocation.getCurrentPosition(pos => {
+                puntos.push({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+                guardarYRender();
+            });
+        }
+
+        function eliminar(i) { puntos.splice(i, 1); guardarYRender(); }
+        function limpiar() { if(confirm("¿Borrar todo?")) { puntos = []; guardarYRender(); } }
+        
+        function exportar() {
+            let csv = "ID,Latitud,Longitud\n" + puntos.map((p, i) => `${i+1},${p.lat},${p.lon}`).join("\n");
+            let a = document.createElement('a');
+            a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+            a.download = 'medicion.csv';
+            a.click();
+        }
+
+        render();
+    </script>
+</body>
+</html>
