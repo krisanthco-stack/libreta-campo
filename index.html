@@ -2,38 +2,50 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Libreta Agrimensura Pro</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+    <title>Agrimensor Pro - V5</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #fdf6e3; padding: 10px; }
-        #map { height: 40vh; border: 3px solid #5d4037; }
-        .stats { background: #e0d5c1; padding: 10px; margin: 10px 0; border: 1px solid #5d4037; font-weight: bold; }
-        .punto-item { display: flex; justify-content: space-between; padding: 5px; border-bottom: 1px solid #999; }
+        body { font-family: sans-serif; background: #fdf6e3; padding: 15px; font-size: 18px; color: #333; margin: 0; }
+        #map { height: 45vh; border: 4px solid #5d4037; border-radius: 8px; margin-bottom: 15px; }
+        .stats { background: #e0d5c1; padding: 15px; margin: 10px 0; border: 2px solid #5d4037; font-size: 20px; font-weight: bold; text-align: center; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        button { background: #5d4037; color: white; padding: 18px; border: none; font-weight: bold; font-size: 17px; border-radius: 6px; cursor: pointer; }
+        .punto-item { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 2px solid #ccc; font-size: 17px; }
+        .del-btn { background: #8b0000; color: white; padding: 8px 15px; border-radius: 5px; font-weight: bold; }
     </style>
 </head>
 <body>
-    <h3>Libreta Agrimensura Pro</h3>
+    <h3>Agrimensor Pro</h3>
     <div id="map"></div>
     <div id="stats" class="stats">Área: <span id="area-val">0</span> m²</div>
     
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
-        <button onclick="marcarGPS()">📍 GPS</button>
+    <div class="grid">
+        <button onclick="marcarGPS()">📍 Usar GPS</button>
         <button id="btn-manual" onclick="toggleManual()">🖱️ Modo Clic</button>
-        <button onclick="borrar()" style="background: #8b0000; color: white;">❌ Borrar</button>
-        <button onclick="exportar()">💾 CSV</button>
+        <button onclick="toggleMapa()">🛰️ Mapa / Sat</button>
+        <button onclick="borrar()" style="background: #8b0000;">❌ Limpiar Todo</button>
     </div>
-    <ul id="lista-puntos"></ul>
+    
+    <ul id="lista-puntos" style="padding: 0; margin-top: 20px;"></ul>
 
     <script>
-        // Carga segura: recupera lo existente sin borrar
         let puntos = JSON.parse(localStorage.getItem('puntos') || '[]');
         let map = L.map('map').setView([10.46, -83.98], 15);
+        let modoSatelite = false;
+        
+        let osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        let sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {attribution: 'Esri'});
+        
         let marcadores = L.layerGroup().addTo(map);
-        let poligono = L.polygon([], {color: 'green'}).addTo(map);
+        let poligono = L.polygon([], {color: '#2e5339', weight: 4, fillOpacity: 0.2}).addTo(map);
         let modoManual = false;
 
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        function toggleMapa() {
+            modoSatelite = !modoSatelite;
+            modoSatelite ? (map.addLayer(sat), map.removeLayer(osm)) : (map.addLayer(osm), map.removeLayer(sat));
+        }
 
         function calcularArea(pts) {
             if (pts.length < 3) return 0;
@@ -53,44 +65,33 @@
 
         function render() {
             marcadores.clearLayers();
+            const lista = document.getElementById('lista-puntos');
+            lista.innerHTML = "";
             puntos.forEach((p, i) => {
                 L.marker([p.lat, p.lon]).addTo(marcadores).bindPopup("P" + (i+1));
                 const li = document.createElement('li');
                 li.className = 'punto-item';
-                li.innerHTML = `P${i+1}: ${p.lat.toFixed(5)}, ${p.lon.toFixed(5)} <button onclick="eliminar(${i})">X</button>`;
-                document.getElementById('lista-puntos').appendChild(li);
+                li.innerHTML = `P${i+1}: ${p.lat.toFixed(5)}, ${p.lon.toFixed(5)} <span class="del-btn" onclick="eliminar(${i})">X</span>`;
+                lista.appendChild(li);
             });
             poligono.setLatLngs(puntos.map(p => [p.lat, p.lon]));
             document.getElementById('area-val').innerText = calcularArea(puntos);
-            // Guardado automático constante
             localStorage.setItem('puntos', JSON.stringify(puntos));
+            if (puntos.length > 0) map.setView([puntos[puntos.length-1].lat, puntos[puntos.length-1].lon], 18);
         }
 
         function marcarGPS() {
             navigator.geolocation.getCurrentPosition(pos => {
                 puntos.push({ lat: pos.coords.latitude, lon: pos.coords.longitude });
                 render();
-            });
+            }, (e) => alert("Error GPS: " + e.message), {enableHighAccuracy: true});
         }
 
         map.on('click', (e) => { if (modoManual) { puntos.push({ lat: e.latlng.lat, lon: e.latlng.lng }); render(); } });
-
-        function toggleManual() {
-            modoManual = !modoManual;
-            document.getElementById('btn-manual').style.background = modoManual ? '#2e5339' : '';
-        }
-
-        function eliminar(i) { puntos.splice(i, 1); document.getElementById('lista-puntos').innerHTML = ''; render(); }
-        function borrar() { if(confirm("¿Borrar todos los puntos?")) { puntos = []; document.getElementById('lista-puntos').innerHTML = ''; render(); } }
+        function toggleManual() { modoManual = !modoManual; document.getElementById('btn-manual').style.background = modoManual ? '#2e5339' : '#5d4037'; }
+        function eliminar(i) { puntos.splice(i, 1); render(); }
+        function borrar() { if(confirm("¿Borrar todos los puntos definitivamente?")) { puntos = []; render(); } }
         
-        function exportar() {
-            let csv = "ID,Latitud,Longitud\n" + puntos.map((p, i) => `${i+1},${p.lat},${p.lon}`).join("\n");
-            let a = document.createElement('a');
-            a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
-            a.download = 'datos_campo.csv';
-            a.click();
-        }
-
         render();
     </script>
 </body>
