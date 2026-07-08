@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+    <title>Libreta de Agrimensura Pro</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" onerror="window.__leafletFailed=true;"></script>
+    <style>
+        :root { --papel: #f4ecd8; --tierra: #5d4037; --rojo: #8b0000; --verde: #2e5339; }
+        * { box-sizing: border-box; }
+        body { font-family: 'Courier New', monospace; background: var(--papel); color: var(--tierra); margin: 0; padding: 10px; }
+        h3 { margin: 4px 0 10px 0; }
+        #map { height: 40vh; border: 3px solid var(--tierra); margin-bottom: 10px; background: #ddd4bf; }
+        #insecure-warning {
+            display: none;
+            background: #fdecea; border: 2px solid var(--rojo); color: var(--rojo);
+            padding: 10px; margin-bottom: 10px; font-size: 12.5px; line-height: 1.5;
+        }
+        #status {
+            font-size: 12px; min-height: 18px; margin-bottom: 8px; padding: 6px 8px;
+            border: 1px solid var(--tierra); background: rgba(255,255,255,0.4);
+        }
+        #status.err { color: var(--rojo); border-color: var(--rojo); }
+        #status.ok { color: var(--verde); border-color: var(--verde); }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+        button { background: var(--tierra); color: var(--papel); border: none; padding: 12px; cursor: pointer; font-weight: bold; font-family: inherit; font-size: 12.5px; }
+        button:disabled { opacity: 0.5; }
+        button.secondary { background: transparent; border: 1.5px solid var(--tierra); color: var(--tierra); }
+        .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
+        .stat-box { background: #e0d5c1; padding: 10px; border: 1px solid var(--tierra); }
+        .stat-box .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.75; }
+        .stat-box .value { font-size: 17px; font-weight: bold; }
+        #lista-puntos { list-style: none; margin: 0; padding: 0; }
+        .punto-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 4px; border-bottom: 1px solid #ccc; font-size: 12px; }
+        .punto-item .del { background: none; border: none; color: var(--rojo); font-weight: bold; padding: 2px 8px; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <h3>Agrimensor Digital</h3>
+
+    <div id="insecure-warning">
+        ⚠️ Este archivo se está abriendo como descarga local, así que el navegador
+        va a <strong>bloquear el GPS sin avisar</strong>. Subilo a un hosting con
+        HTTPS (GitHub Pages, Netlify Drop) o abrilo desde la vista previa del chat
+        en vez del archivo descargado.
+    </div>
+
+    <div id="map"></div>
+
+    <div class="grid">
+        <button onclick="marcarPunto()" id="btn-marcar">📍 Registrar</button>
+        <button onclick="exportarCSV()">💾 CSV</button>
+        <button onclick="toggleLayer()">🛰️ Mapa/Sat</button>
+        <button onclick="limpiarTodo()" style="background:var(--rojo);">❌ Limpiar</button>
+    </div>
+    <div class="grid" style="margin-top:5px;">
+        <button class="secondary" onclick="deshacerUltimo()">↩️ Deshacer último</button>
+        <button class="secondary" onclick="marcarPunto()">🔄 Reintentar GPS</button>
+    </div>
+
+    <div id="status">Listo. Presioná "Registrar" para marcar tu ubicación.</div>
+
+    <div class="stats">
+        <div class="stat-box">
+            <div class="label">Distancia total</div>
+            <div class="value" id="dist-value">—</div>
+        </div>
+        <div class="stat-box">
+            <div class="label">Área (polígono)</div>
+            <div class="value" id="area-value">—</div>
+        </div>
+    </div>
+
+    <ul id="lista-puntos"></ul>
+
+    <script>
+        let puntos = JSON.parse(localStorage.getItem('puntos') || '[]');
+        let map, osm, sat, esSat = false, polyline, poligono, marcadores;
+
+        const statusEl = document.getElementById('status');
+        function setStatus(msg, tipo) {
+            statusEl.textContent = msg;
+            statusEl.className = tipo ? tipo : '';
+        }
+
+        // --- Detección de contexto inseguro (file:// o content://) ---
+        if (!window.isSecureContext) {
+            document.getElementById('insecure-warning').style.display = 'block';
+            setStatus('⚠️ GPS probablemente bloqueado: el archivo no se abrió con conexión segura.', 'err');
+        }
+
+        // --- Inicializar mapa ---
+        function initMap() {
+            if (typeof L === 'undefined') {
+                document.getElementById('map').innerHTML =
+                    '<div style="padding:15px;font-size:12px;color:var(--rojo);">No se pudo cargar el mapa (sin internet o el CDN está bloqueado en tu red). Los cálculos de distancia/área funcionan igual.</div>';
+                return;
+            }
+            map = L.map('map').setView([0, 0], 2);
+            osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19, attribution: '&copy; OpenStreetMap'
+            }).addTo(map);
+            sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                maxZoom: 19, attribution: 'Tiles &copy; Esri'
+            });
+            polyline = L.polyline([], { color: '#5d4037', weight: 3 }).addTo(map);
+            poligono = L.polygon([], { color: '#8A6D3B', weight: 1.5, dashArray: '5,4', fillOpacity: 0.15 }).addTo(map);
+            marcadores = L.layerGroup().addTo(map);
+            render();
+        }
+        initMap();
+
+        function toggleLayer() {
+            if (!map) return;
+            esSat = !esSat;
+            if (esSat) { map.addLayer(sat); map.removeLayer(osm); }
+            else { map.addLayer(osm); map.removeLayer(sat); }
+        }
+
+        // --- GPS ---
+        function marcarPunto() {
+            if (!navigator.geolocation) {
+                setStatus('Este navegador no soporta geolocalización.', 'err');
+                return;
+            }
+            document.getElementById('btn-marcar').disabled = true;
+            setStatus('Buscando tu ubicación…');
+            navigator.geolocation.getCurrentPosition(
+                pos => {
+                    puntos.push({ lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy });
+                    localStorage.setItem('puntos', JSON.stringify(puntos));
+                    setStatus(`Punto ${puntos.length} marcado · precisión ±${pos.coords.accuracy.toFixed(0)} m`, 'ok');
+                    document.getElementById('btn-marcar').disabled = false;
+                    render();
+                },
+                err => {
+                    let msg = 'No se pudo obtener la ubicación.';
+                    if (err.code === 1) msg = 'Permiso de ubicación denegado. Revisá el ícono 🔒 junto a la dirección y habilitá "Ubicación".';
+                    if (err.code === 2) msg = 'Ubicación no disponible. Probá al aire libre o revisá que el GPS del teléfono esté activado.';
+                    if (err.code === 3) msg = 'Se agotó el tiempo esperando el GPS. Intentá de nuevo.';
+                    setStatus(msg, 'err');
+                    document.getElementById('btn-marcar').disabled = false;
+                },
+                { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+            );
+        }
+
+        function eliminarPunto(i) {
+            puntos.splice(i, 1);
+            localStorage.setItem('puntos', JSON.stringify(puntos));
+            render();
+        }
+
+        function deshacerUltimo() {
+            puntos.pop();
+            localStorage.setItem('puntos', JSON.stringify(puntos));
+            render();
+        }
+
+        function limpiarTodo() {
+            if (puntos.length && !confirm('¿Borrar todos los puntos marcados?')) return;
+            puntos = [];
+            localStorage.setItem('puntos', JSON.stringify(puntos));
+            setStatus('Puntos borrados.');
+            render();
+        }
+
+        function exportarCSV() {
+            if (puntos.length === 0) { setStatus('No hay puntos para exportar.', 'err'); return; }
+            let csv = "punto,lat,lon,precision_m\n" +
+                puntos.map((p, i) => `${i+1},${p.lat},${p.lon},${p.acc ? p.acc.toFixed(1) : ''}`).join("\n");
+            let blob = new Blob([csv], { type: 'text/csv' });
+            let a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'medicion.csv';
+            a.click();
+        }
+
+        // --- Cálculos: distancia (Haversine) y área (Gauss/shoelace) ---
+        function haversine(a, b) {
+            const R = 6371000;
+            const toRad = d => d * Math.PI / 180;
+            const dLat = toRad(b.lat - a.lat);
+            const dLon = toRad(b.lon - a.lon);
+            const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+            const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+            return 2 * R * Math.asin(Math.sqrt(h));
+        }
+
+        function toLocalMeters(pts) {
+            if (pts.length === 0) return [];
+            const lat0 = pts[0].lat * Math.PI / 180;
+            const R = 6371000;
+            return pts.map(p => ({
+                x: (p.lon * Math.PI/180) * Math.cos(lat0) * R,
+                y: (p.lat * Math.PI/180) * R
+            }));
+        }
+
+        function areaShoelace(local) {
+            if (local.length < 3) return 0;
+            let sum = 0;
+            for (let i = 0; i < local.length; i++) {
+                const a = local[i], b = local[(i+1) % local.length];
+                sum += (a.x * b.y - b.x * a.y);
+            }
+            return Math.abs(sum) / 2;
+        }
+
+        function formatDist(m) {
+            return m < 1000 ? `${m.toFixed(1)} m` : `${(m/1000).toFixed(3)} km`;
+        }
+        function formatArea(m2) {
+            return m2 < 10000 ? `${m2.toFixed(1)} m²` : `${(m2/10000).toFixed(3)} ha`;
+        }
+
+        // --- Render general ---
+        function render() {
+            const lista = document.getElementById('lista-puntos');
+            lista.innerHTML = "";
+            puntos.forEach((p, i) => {
+                const li = document.createElement('li');
+                li.className = 'punto-item';
+                li.innerHTML = `<span>P${i+1}: ${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}</span>
+                    <button class="del" onclick="eliminarPunto(${i})">✕</button>`;
+                lista.appendChild(li);
+            });
+
+            let totalDist = 0;
+            for (let i = 1; i < puntos.length; i++) totalDist += haversine(puntos[i-1], puntos[i]);
+            document.getElementById('dist-value').textContent = puntos.length < 2 ? '—' : formatDist(totalDist);
+
+            if (puntos.length < 3) {
+                document.getElementById('area-value').textContent = 'mín. 3 pts';
+            } else {
+                const local = toLocalMeters(puntos);
+                document.getElementById('area-value').textContent = formatArea(areaShoelace(local));
+            }
+
+            if (!map) return;
+            const latlngs = puntos.map(p => [p.lat, p.lon]);
+            polyline.setLatLngs(latlngs);
+            poligono.setLatLngs(puntos.length >= 3 ? latlngs : []);
+            marcadores.clearLayers();
+            puntos.forEach((p, i) => {
+                L.circleMarker([p.lat, p.lon], {
+                    radius: 8, color: '#f4ecd8', weight: 2,
+                    fillColor: i === 0 ? '#2e5339' : '#8b0000', fillOpacity: 1
+                }).bindTooltip(String(i+1), { permanent: true, direction: 'top', offset: [0,-8] }).addTo(marcadores);
+            });
+            if (latlngs.length === 1) map.setView(latlngs[0], 18);
+            else if (latlngs.length > 1) map.fitBounds(L.latLngBounds(latlngs), { padding: [30,30] });
+        }
+    </script>
+</body>
+</html>
