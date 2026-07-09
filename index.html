@@ -5,12 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
     <title>Agrimensor Pro</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" onerror="window.__leafletFailed=true;"></script>
     <style>
         * { box-sizing: border-box; }
         body { font-family: sans-serif; background: #fdf6e3; padding: 10px; font-size: 16px; color: #333; margin: 0; }
         #map { height: 42vh; border: 3px solid #5d4037; border-radius: 6px; margin-bottom: 10px; }
-        .stats { background: #e0d5c1; padding: 10px; margin-bottom: 6px; border: 2px solid #5d4037; font-size: 16px; font-weight: bold; text-align: center; border-radius: 6px; }
+        .stats { background: #e0d5c1; padding: 10px; margin-bottom: 6px; border: 2px solid #5d4037; border-radius: 6px; }
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; text-align: center; }
+        .stats-grid .item .label { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.3px; opacity: 0.75; }
+        .stats-grid .item .value { font-size: 15px; font-weight: bold; }
         .disclaimer { font-size: 11px; color: #7a4a2b; text-align: center; margin-bottom: 10px; line-height: 1.4; }
         #status { font-size: 12.5px; min-height: 18px; margin-bottom: 8px; padding: 6px 8px; border-radius: 6px; border: 1px solid #5d4037; background: rgba(255,255,255,0.5); }
         #status.err { color: #8b0000; border-color: #8b0000; }
@@ -28,6 +31,8 @@
         .punto-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 4px; border-bottom: 1px solid #ccc; font-size: 13px; }
         .punto-item.no-sel { opacity: 0.4; }
         .punto-item .izq { display: flex; align-items: center; gap: 8px; flex: 1; }
+        .punto-item .txt { display: flex; flex-direction: column; }
+        .punto-item .seg { font-size: 10.5px; opacity: 0.7; }
         .punto-item .chk { width: 20px; height: 20px; flex-shrink: 0; }
         .del-btn { background: #8b0000; color: white; padding: 5px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; }
     </style>
@@ -38,7 +43,22 @@
     <div id="status">Listo. Marcá un punto con GPS o activá el modo clic.</div>
 
     <div id="map"></div>
-    <div class="stats">Área: <span id="area-val">0</span> m² | Perímetro: <span id="dist-val">0</span> m</div>
+    <div class="stats">
+        <div class="stats-grid">
+            <div class="item">
+                <div class="label">Distancia (recorrido)</div>
+                <div class="value" id="dist-val">0 m</div>
+            </div>
+            <div class="item">
+                <div class="label">Perímetro (cerrado)</div>
+                <div class="value" id="perim-val">0 m</div>
+            </div>
+            <div class="item">
+                <div class="label">Área</div>
+                <div class="value" id="area-val">0 m²</div>
+            </div>
+        </div>
+    </div>
     <div class="disclaimer">
         Los valores Norte/Este son una <strong>aproximación plana local</strong>, no una proyección CRTM05 oficial.
         No usar como coordenadas catastrales/legales sin verificar con un agrimensor matriculado.
@@ -69,26 +89,45 @@
         let puntos = JSON.parse(localStorage.getItem('puntos') || '[]');
         puntos.forEach(p => { if (typeof p.sel === 'undefined') p.sel = true; });
 
-        let map = L.map('map').setView(
-            puntos.length ? [puntos[0].lat, puntos[0].lon] : [10.46, -83.98],
-            puntos.length ? 16 : 14
-        );
-        let modoSat = false, modoManual = false;
-
-        let osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19, attribution: '&copy; OpenStreetMap'
-        }).addTo(map);
-        let sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-            maxZoom: 19, attribution: 'Tiles &copy; Esri'
-        });
-
-        let marcadores = L.layerGroup().addTo(map);
-        let poligono = L.polygon([], { color: '#2e5339', weight: 3, fillOpacity: 0.3 }).addTo(map);
-
         const statusEl = document.getElementById('status');
         function setStatus(msg, tipo) {
             statusEl.textContent = msg;
             statusEl.className = tipo || '';
+        }
+
+        // Aviso si el archivo se abrió sin conexión segura (GPS se bloquea en ese caso)
+        if (!window.isSecureContext) {
+            setStatus('⚠️ GPS probablemente bloqueado: este archivo no se abrió con conexión segura (https). El resto de las funciones (clic manual, CSV) sí deberían andar.', 'err');
+        }
+
+        let modoSat = false, modoManual = false;
+        let map = null, osm = null, sat = null, marcadores = null, poligono = null;
+
+        if (typeof L === 'undefined') {
+            document.getElementById('map').innerHTML =
+                '<div style="padding:15px;font-size:13px;color:#8b0000;">No se pudo cargar el mapa (sin internet o el CDN está bloqueado en tu red). El modo clic no va a funcionar sin mapa, pero el GPS y los cálculos de distancia/área siguen operando.</div>';
+        } else {
+            map = L.map('map').setView(
+                puntos.length ? [puntos[0].lat, puntos[0].lon] : [10.46, -83.98],
+                puntos.length ? 16 : 14
+            );
+
+            osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19, attribution: '&copy; OpenStreetMap'
+            }).addTo(map);
+            sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                maxZoom: 19, attribution: 'Tiles &copy; Esri'
+            });
+
+            marcadores = L.layerGroup().addTo(map);
+            poligono = L.polygon([], { color: '#2e5339', weight: 3, fillOpacity: 0.3 }).addTo(map);
+
+            map.on('click', (e) => {
+                if (modoManual) {
+                    puntos.push({ lat: e.latlng.lat, lon: e.latlng.lng, sel: true });
+                    render();
+                }
+            });
         }
 
         // --- Proyección aproximada (NO es CRTM05 oficial, es plana local) ---
@@ -100,52 +139,97 @@
         }
 
         // --- Cálculos ---
+        function haversineM(a, b) {
+            const R = 6371000;
+            const rad = d => d * Math.PI / 180;
+            const dLat = rad(b.lat - a.lat);
+            const dLon = rad(b.lon - a.lon);
+            const lat1 = rad(a.lat), lat2 = rad(b.lat);
+            const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+            return 2 * R * Math.asin(Math.sqrt(h));
+        }
+
+        function formatM(m) {
+            return m < 1000 ? `${m.toFixed(1)} m` : `${(m/1000).toFixed(3)} km`;
+        }
+
         function calcularTodo() {
             const sel = puntos.filter(p => p.sel);
-            if (sel.length < 3) return { a: "0.00", p: "0.00" };
+
+            // Distancia del recorrido (abierto, sin cerrar el polígono)
+            let distancia = 0;
+            for (let i = 1; i < sel.length; i++) distancia += haversineM(sel[i-1], sel[i]);
+
+            if (sel.length < 3) {
+                return { a: "0.00", perim: distancia > 0 ? formatM(distancia) : "0 m", dist: sel.length >= 2 ? formatM(distancia) : "0 m" };
+            }
+
+            // Perímetro (cerrado): distancia + el segmento que vuelve al primer punto
+            let perimetro = distancia + haversineM(sel[sel.length - 1], sel[0]);
+
+            // Área con proyección plana local
             let coords = sel.map(p => toLocalXY(p.lat, p.lon));
-            let area = 0, perim = 0;
+            let area = 0;
             for (let i = 0; i < coords.length; i++) {
                 let j = (i + 1) % coords.length;
                 area += (coords[i].x * coords[j].y) - (coords[j].x * coords[i].y);
-                perim += Math.sqrt(Math.pow(coords[j].x - coords[i].x, 2) + Math.pow(coords[j].y - coords[i].y, 2));
             }
-            return { a: Math.abs(area / 2).toFixed(2), p: perim.toFixed(2) };
+            area = Math.abs(area / 2);
+
+            return { a: area.toFixed(2), perim: formatM(perimetro), dist: formatM(distancia) };
         }
 
         // --- Render ---
         function render() {
-            marcadores.clearLayers();
+            if (marcadores) marcadores.clearLayers();
             const lista = document.getElementById('lista-puntos');
             lista.innerHTML = "";
 
+            let prevSel = null;
             puntos.forEach((p, i) => {
                 let c = toLocalXY(p.lat, p.lon);
-                L.marker([p.lat, p.lon], { opacity: p.sel ? 1 : 0.45 })
-                    .addTo(marcadores)
-                    .bindPopup(`P${i+1}<br>N: ${c.y}<br>E: ${c.x}`);
+                if (map) {
+                    L.marker([p.lat, p.lon], { opacity: p.sel ? 1 : 0.45 })
+                        .addTo(marcadores)
+                        .bindPopup(`P${i+1}<br>N: ${c.y}<br>E: ${c.x}`);
+                }
+
+                let segTxt = '';
+                if (p.sel) {
+                    if (prevSel) {
+                        const d = haversineM(prevSel, p);
+                        segTxt = `<div class="seg">↳ ${formatM(d)} desde el punto anterior seleccionado</div>`;
+                    }
+                    prevSel = p;
+                }
 
                 const li = document.createElement('li');
                 li.className = 'punto-item' + (p.sel ? '' : ' no-sel');
                 li.innerHTML = `
                     <span class="izq">
                         <input type="checkbox" class="chk" ${p.sel ? 'checked' : ''} onchange="toggleSel(${i})">
-                        <span>P${i+1} (N:${c.y}, E:${c.x})</span>
+                        <span class="txt">
+                            <span>P${i+1} (N:${c.y}, E:${c.x})</span>
+                            ${segTxt}
+                        </span>
                     </span>
                     <span class="del-btn" onclick="eliminar(${i})">X</span>`;
                 lista.appendChild(li);
             });
 
-            const selLatLngs = puntos.filter(p => p.sel).map(p => [p.lat, p.lon]);
-            poligono.setLatLngs(selLatLngs);
+            if (map && poligono) {
+                const selLatLngs = puntos.filter(p => p.sel).map(p => [p.lat, p.lon]);
+                poligono.setLatLngs(selLatLngs);
+            }
 
             let calc = calcularTodo();
-            document.getElementById('area-val').innerText = calc.a;
-            document.getElementById('dist-val').innerText = calc.p;
+            document.getElementById('area-val').innerText = calc.a + ' m²';
+            document.getElementById('perim-val').innerText = calc.perim;
+            document.getElementById('dist-val').innerText = calc.dist;
 
             localStorage.setItem('puntos', JSON.stringify(puntos));
 
-            if (puntos.length > 0 && !modoManual) {
+            if (map && puntos.length > 0 && !modoManual) {
                 map.setView([puntos[puntos.length - 1].lat, puntos[puntos.length - 1].lon], 18);
             }
         }
@@ -183,19 +267,15 @@
 
         // --- Modo clic manual ---
         function toggleManual() {
+            if (!map) { setStatus('El modo clic necesita el mapa, que no está disponible ahora.', 'err'); return; }
             modoManual = !modoManual;
             document.getElementById('btn-manual').className = modoManual ? 'btn-activo' : '';
             setStatus(modoManual ? 'Modo clic activado: tocá el mapa para agregar puntos.' : 'Modo clic desactivado.');
         }
-        map.on('click', (e) => {
-            if (modoManual) {
-                puntos.push({ lat: e.latlng.lat, lon: e.latlng.lng, sel: true });
-                render();
-            }
-        });
 
         // --- Capas de mapa ---
         function toggleMapa() {
+            if (!map) { setStatus('El mapa no está disponible ahora mismo.', 'err'); return; }
             modoSat = !modoSat;
             if (modoSat) { map.addLayer(sat); map.removeLayer(osm); }
             else { map.addLayer(osm); map.removeLayer(sat); }
@@ -205,7 +285,8 @@
         function eliminar(i) { puntos.splice(i, 1); render(); }
         function deshacerUltimo() { puntos.pop(); render(); }
         function borrar() {
-            if (puntos.length && confirm("¿Borrar todo definitivamente?")) {
+            if (!puntos.length) { setStatus('No hay puntos para borrar.'); return; }
+            if (confirm("¿Borrar todo definitivamente?")) {
                 puntos = [];
                 setStatus('Puntos borrados.');
                 render();
@@ -220,7 +301,7 @@
                 let c = toLocalXY(p.lat, p.lon);
                 return `${i+1},${c.y},${c.x},${p.lat},${p.lon},${p.sel ? 'si' : 'no'}`;
             }).join("\n");
-            csv += `\n\n--- RESUMEN (solo puntos seleccionados) ---\nArea (m2),${calc.a}\nPerimetro (m),${calc.p}\n`;
+            csv += `\n\n--- RESUMEN (solo puntos seleccionados) ---\nArea (m2),${calc.a}\nPerimetro cerrado,${calc.perim}\nDistancia recorrido,${calc.dist}\n`;
 
             let a = document.createElement('a');
             a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
@@ -258,8 +339,9 @@
                     if (cols.length >= 5) {
                         let lat = parseFloat(cols[3]);
                         let lon = parseFloat(cols[4]);
+                        let sel = cols.length >= 6 ? (cols[5].trim().toLowerCase() !== 'no') : true;
                         if (!isNaN(lat) && !isNaN(lon)) {
-                            puntos.push({ lat, lon, sel: true });
+                            puntos.push({ lat, lon, sel });
                             importados++;
                         }
                     }
